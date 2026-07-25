@@ -20,9 +20,15 @@ create_bucket() {
     echo "Bucket $S3_BUCKET_NAME doesn't exist. Creating it now..."
 
     # create bucket
-    s3api create-bucket \
-        --create-bucket-configuration LocationConstraint="$AWS_REGION" \
-        --object-ownership BucketOwnerEnforced
+    # us-east-1 rejects a LocationConstraint; every other region requires it
+    if [ "$AWS_REGION" = "us-east-1" ]; then
+        s3api create-bucket \
+            --object-ownership BucketOwnerEnforced
+    else
+        s3api create-bucket \
+            --create-bucket-configuration LocationConstraint="$AWS_REGION" \
+            --object-ownership BucketOwnerEnforced
+    fi
 
     # block public access
     s3api put-public-access-block \
