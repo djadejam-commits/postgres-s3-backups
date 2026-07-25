@@ -4,6 +4,29 @@ set -o errexit -o nounset -o pipefail
 
 export AWS_PAGER=""
 
+# ── Sentry Cron Monitor check-ins (optional) ───────────────────────────────────────────────
+# Set SENTRY_CRONS_URL to the monitor's check-in URL, e.g.
+#   https://o<ORG_ID>.ingest.sentry.io/api/<PROJECT_ID>/cron/<MONITOR_SLUG>/<SENTRY_KEY>/
+# Sentry then alerts on a FAILED run (status=error) AND on a MISSED run (no check-in within the
+# monitor's schedule + margin) — the missed-run case is what catches a silently non-running
+# backup, which a plain exit-code notification cannot see.
+# Best-effort by design: a check-in never fails or delays the backup itself; an unset URL is a
+# no-op, so the backup keeps working with or without alerting configured.
+sentry_checkin() {
+    local status="$1"
+    local url="${SENTRY_CRONS_URL:-}"
+    [ -n "$url" ] || return 0
+    curl -sf -m 10 -o /dev/null "${url}?status=${status}" || true
+}
+
+# errexit fires on the first failed command, so any real failure exits non-zero. main() sends
+# 'ok' on success and returns 0, so this EXIT trap only reports 'error' on an actual failure.
+report_failure_on_error() {
+    local rc=$?
+    [ "$rc" -eq 0 ] || sentry_checkin error
+}
+trap report_failure_on_error EXIT
+
 s3() {
     aws s3 --region "$AWS_REGION" "$@"
 }
@@ -35,7 +58,7 @@ create_bucket() {
         --public-access-block-configuration \
         "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
 
-    # enable versioning for objects in the bucket 
+    # enable versioning for objects in the bucket
     s3api put-bucket-versioning --versioning-configuration Status=Enabled
 
     # encrypt objects in the bucket
@@ -47,7 +70,7 @@ create_bucket() {
 ensure_bucket_exists() {
     if bucket_exists; then
         return
-    fi    
+    fi
     create_bucket
 }
 
@@ -62,10 +85,12 @@ upload_to_bucket() {
 }
 
 main() {
+    sentry_checkin in_progress
     ensure_bucket_exists
     echo "Taking backup and uploading it to S3..."
     pg_dump_database | gzip | upload_to_bucket
     echo "Done."
+    sentry_checkin ok
 }
 
 main
